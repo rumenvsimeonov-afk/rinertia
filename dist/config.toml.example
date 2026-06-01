@@ -1,45 +1,16 @@
-# rinertia example config
+# rinertia pointer-inertia example config
 # All fields are optional. CLI arguments override config values.
 # Omitted fields use built-in defaults.
+
+log_level = "info"
+# decision_log = "/tmp/rinertia-decisions.log"
 
 [device]
 # path = "/dev/input/event9"
 # name = "ELAN"
 
-[scroll]
-enabled = true
-
-# Damping curve type: "dual", "expo", or "macos"
-#   dual  — exponential decay + linear tail (default)
-#   expo  — pure exponential decay
-#   macos — macOS-style time-constant decay
-damping_curve = "dual"
-
-# --- expo / dual shared ---
-damping = 0.05
-
-# --- dual only ---
-phase_threshold = 25.0
-linear_decel_ms = 384
-linear_stop_hires = 1
-
-# --- macos only ---
-# time_constant_ms = 325.0
-# stop_threshold = 60.0
-
-min_velocity = 120.0
-scroll_factor = 1.0
-tp_to_hires = 5.0
-# natural_scroll = false
-multitouch_cooldown = 500
-
 [pointer]
-enabled = false
-drag = 0.15
+drag = 0.01
 speed_factor = 0.0075
-min_velocity = 2000.0
-
-[interrupt]
-enabled = true
-
-# log_level = "info"
+min_velocity = 100.0
+velocity_stale_ms = 150

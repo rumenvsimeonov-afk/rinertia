@@ -1,11 +1,10 @@
 [Unit]
-Description=rinertia — inertial scrolling daemon for Linux touchpads
-Documentation=https://github.com/JimMoen/rinertia
+Description=rinertia pointer inertia daemon for Linux touchpads
 After=graphical-session.target
 
 [Service]
 Type=simple
-ExecStart=/usr/bin/rinertia --config %h/.config/rinertia/config.toml
+ExecStart=/usr/local/bin/rinertia --config %h/.config/rinertia/config.toml
 Restart=on-failure
 RestartSec=3
 

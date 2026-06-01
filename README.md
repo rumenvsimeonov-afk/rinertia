@@ -1,102 +1,175 @@
-# rinertia
+# rinertia pointer inertia
 
-Momentum scrolling for Linux laptop touchpads.
+A small Linux userspace daemon that adds pointer inertia to touchpads.
 
-The Synaptics input driver used to provide momentum (coasting) scrolling — you could flick two fingers and the page would keep gliding. When the Linux desktop moved to libinput, this feature was dropped. rinertia brings it back as a standalone userspace daemon, working system-wide with any Wayland compositor and any application, zero configuration required.
+This is a modified/forked version of `rinertia`. The original project focused
+on momentum scrolling. This version removes the scroll path and keeps only
+pointer/cursor inertia, intended for systems where the native touchpad driver
+already provides good inertial scrolling but no inertial pointer movement.
+
+The code is experimental and device-dependent. It has been tuned on one laptop
+touchpad, so expect to adjust the parameters for other hardware.
+
+## What it does
+
+- Passively reads touchpad events from `/dev/input/event*` through evdev.
+- Creates a uinput virtual relative pointer device.
+- Starts cursor inertia after a qualifying one-finger movement.
+- Stops inertia on a real click, multitouch gesture, or confirmed retouch.
+- Ignores very short post-lift retouches to avoid false stops caused by finger
+  bounce or skin elasticity.
+- Temporarily grabs the real touchpad only while pointer inertia is active, so
+  the touch used to stop inertia is hidden from the normal touchpad driver.
+
+It does not implement scrolling. If your existing Synaptics/libinput setup
+already has good scroll behavior, this daemon leaves that path alone.
 
 ## How it works
 
-```mermaid
-graph LR
-    K["Kernel evdev<br/>/dev/input/eventN"] --> R["rinertia<br/>(passive read, no GRAB)"]
-    K --> L["libinput"]
-    R --> M["Momentum engine"]
-    M --> U["uinput virtual device<br/>REL_WHEEL_HI_RES"]
-    U --> L
-    L --> C["Compositor / Applications"]
-
-    style R fill:#4a9eff,color:#fff
-    style U fill:#4a9eff,color:#fff
+```text
+touchpad evdev device
+        |
+        | normal movement: passive read
+        | active inertia: temporary EVIOCGRAB
+        v
+   rinertia listener ----> pointer momentum engine
+                                  |
+                                  v
+                         uinput virtual mouse
+                                  |
+                                  v
+                         desktop input stack
 ```
 
-> rinertia passively reads touchpad events via evdev, computes momentum, and injects scroll events through a uinput virtual device. These injected events flow through libinput into the compositor — the same path as any real input device. Since rinertia never grabs the touchpad, normal scrolling, gestures, and tools like [fusuma](https://github.com/iberianpig/fusuma) are completely unaffected.
+The real touchpad driver still handles normal cursor movement, tapping,
+clicking, dragging, and scrolling. `rinertia` injects extra relative pointer
+movement after the finger is lifted.
 
-rinertia reads raw touchpad events directly from `/dev/input/eventN` via evdev — it does **not** depend on or interfere with libinput. Since it never grabs the device, your compositor, libinput, and gesture tools like [fusuma](https://github.com/iberianpig/fusuma) continue to work exactly as before.
+While inertia is active, `rinertia` temporarily grabs the real touchpad with
+`EVIOCGRAB`. This prevents the normal touchpad driver from seeing the finger
+touch used to stop inertia. The grab is released when inertia ends or when the
+stop touch is released. If the process exits, the kernel releases the grab.
 
-## Features
+## Build
 
-- **Plug and play** — auto-detects your touchpad, just run it
-- **Non-invasive** — passively reads events, never grabs your touchpad
-- **Universal** — works with GTK, Qt, Electron, Firefox, and everything else
-- **Interruptible** — touch the pad, press a key, or move your mouse to stop immediately
-- **Tunable** — damping, decay curve, and speed are all adjustable
-
-## Install
+Install Rust, then build the release binary:
 
 ```bash
 cargo build --release
 ```
 
-## Usage
+For a system install:
 
 ```bash
-# Just works — auto-detect touchpad, default settings
-sudo rinertia
-
-# Match touchpad by name
-sudo rinertia -n "ELAN"
-
-# Longer, smoother inertia
-sudo rinertia --damping 0.03 --linear-decel-ms 500
-
-# Shorter, snappier inertia
-sudo rinertia --damping 0.10 --linear-decel-ms 200
-
-# Pure exponential decay (no linear tail)
-sudo rinertia --damping-curve expo
-
-# Troubleshooting — log only, no virtual device
-sudo rinertia --dry --log-level debug
-
-# See all options
-rinertia --help
+sudo install -m 0755 target/release/rinertia /usr/local/bin/rinertia
 ```
 
-## Tuning
+## Quick test
 
-| Parameter | Effect of increasing |
-|-----------|---------------------|
-| `--damping` | Faster deceleration, shorter inertia |
-| `--tp-to-hires` | More scroll distance per gesture |
-| `--linear-decel-ms` | Slower, longer tail |
-| `--scroll-factor` | More scroll output per tick |
+Run with the currently tested parameters:
 
-## Scroll direction
+```bash
+sudo /usr/local/bin/rinertia \
+  --pointer-drag 0.01 \
+  --pointer-min-velocity 100 \
+  --log-level info
+```
 
-rinertia **auto-detects** your desktop's scroll direction setting at startup. Currently supported:
+For diagnostics:
 
-| Desktop | Detection method |
-|---------|-----------------|
-| KDE Plasma | KWin D-Bus (`org.kde.KWin.InputDevice.naturalScroll`) |
-| GNOME | gsettings (`org.gnome.desktop.peripherals.touchpad natural-scroll`) |
-| Others | libinput device default (with warning) |
+```bash
+sudo /usr/local/bin/rinertia \
+  --pointer-drag 0.01 \
+  --pointer-min-velocity 100 \
+  --log-level debug \
+  --decision-log /tmp/rinertia-decisions.log
+```
 
-- **Traditional scrolling** (default) — finger drags the scrollbar. Swipe down → page scrolls down.
-- **Natural scrolling** — finger moves with the content, like dragging a piece of paper. Swipe down → page scrolls up.
+The decision log records why inertia starts or is rejected, and how much
+virtual movement was emitted (`total_dx`, `total_dy`).
 
-You can override the auto-detected value with `--natural-scroll` or `natural_scroll = true` in the config file. If your override conflicts with the desktop setting, rinertia will print a warning.
+## Configuration
 
-## Known issues
+Copy the example config:
 
-- **Chromium-based browsers** have built-in smooth scrolling that may stack with rinertia. Disable it via `chrome://flags/#smooth-scrolling`, or use `--scroll-factor` to compensate.
-- `--tp-to-hires` is device-specific — if scrolling feels too fast or slow, adjust this first.
-- Pointer inertia (`--mode pointer`) is experimental.
+```bash
+mkdir -p ~/.config/rinertia
+cp dist/config.toml.example ~/.config/rinertia/config.toml
+```
 
-## Acknowledgements
+Run with:
 
-- [fusuma](https://github.com/iberianpig/fusuma) — multitouch gesture recognizer, whose architecture inspired our passive evdev listener design
-- [waynaptics](https://github.com/kekekeks/waynaptics) — Wayland synaptics driver shim, from which the dual-phase momentum engine was originally ported
-- [xkeysnail](https://github.com/mooz/xkeysnail) — evdev-based key remapper, whose passive evdev monitoring approach informed our no-GRAB design
+```bash
+sudo /usr/local/bin/rinertia --config ~/.config/rinertia/config.toml
+```
+
+Important parameters:
+
+| Parameter | Meaning |
+| --- | --- |
+| `pointer.drag` | Higher value means faster decay and shorter inertia. |
+| `pointer.speed_factor` | Converts touchpad units to virtual mouse movement. |
+| `pointer.min_velocity` | Minimum release velocity required to start inertia. |
+| `pointer.velocity_stale_ms` | Maximum age of release samples used for velocity. |
+| `decision_log` | Optional path for start/reject diagnostics. |
+| `log_level` | `error`, `warn`, `info`, `debug`, or `trace`. |
+
+## udev permissions
+
+The daemon needs read access to the touchpad event device and write access to
+`/dev/uinput`. Running as root is the simplest test path.
+
+For non-root use, install the sample udev rule:
+
+```bash
+sudo install -m 0644 dist/99-rinertia.rules /etc/udev/rules.d/99-rinertia.rules
+sudo udevadm control --reload-rules
+sudo udevadm trigger
+```
+
+Then make sure your user is in the required input/uinput-capable group for your
+distribution. On many systems this means the `input` group.
+
+## systemd user service
+
+After installing the binary and config:
+
+```bash
+mkdir -p ~/.config/systemd/user
+cp dist/rinertia.service ~/.config/systemd/user/rinertia.service
+systemctl --user daemon-reload
+systemctl --user enable --now rinertia.service
+```
+
+If your system does not run user services in the graphical session, start the
+binary manually or adapt the service file to your distribution.
+
+## Safety notes
+
+Pointer inertia can interact badly with drag-and-drop if false clicks or false
+retouches are accepted. This fork therefore suppresses inertia after a click
+and requires a confirmed retouch before stopping active inertia. During active
+inertia it also temporarily grabs the real touchpad so that a stop touch is not
+processed by the normal touchpad driver as a click or drag.
+
+The current behavior is tuned for practical desktop use, not for strict input
+correctness. Test carefully before using it on machines where accidental
+drag-and-drop would be costly.
+
+## Origin and license
+
+This is a modified version/fork of the original MIT-licensed `rinertia` project
+by JimMoen. The MIT license text is preserved in `LICENSE`.
+
+The main changes in this fork are:
+
+- removed scroll momentum code;
+- kept only pointer inertia;
+- added touch/click safety filters;
+- added temporary `EVIOCGRAB` while pointer inertia is active;
+- added decision logging for start/reject/stop diagnostics;
+- tuned behavior for Synaptics-style touchpad setups that already provide
+  native inertial scrolling.
 
 ## License
 

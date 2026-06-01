@@ -1,3 +1,7 @@
 /target
 PLAN.md
 *.png
+*.log
+/reference_snapshots/
+/rinertia.service
+/release/

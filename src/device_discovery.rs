@@ -1,5 +1,5 @@
 use anyhow::{Result, bail};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 /// Find a touchpad device, either by explicit path, name filter, or auto-detection.
 pub fn find_touchpad(device_path: Option<&str>, name_filter: Option<&str>) -> Result<PathBuf> {
@@ -70,4 +70,43 @@ pub fn find_touchpad(device_path: Option<&str>, name_filter: Option<&str>) -> Re
 /// Get the physical path (sysfs location) of an evdev device.
 pub fn get_phys(device: &evdev::Device) -> Option<String> {
     device.physical_path().map(|s| s.to_string())
+}
+
+pub fn find_touchpad_button_device(
+    touchpad_path: &Path,
+    touchpad_phys: Option<&str>,
+) -> Option<(PathBuf, evdev::Device)> {
+    let tp_phys = touchpad_phys?;
+
+    for (path, device) in evdev::enumerate() {
+        if path == touchpad_path {
+            continue;
+        }
+
+        let name = device.name().unwrap_or("");
+        if name.contains("rinertia") {
+            continue;
+        }
+
+        if device.physical_path() != Some(tp_phys) {
+            continue;
+        }
+
+        let Some(keys) = device.supported_keys() else {
+            continue;
+        };
+        if keys.contains(evdev::Key::BTN_TOOL_FINGER) {
+            continue;
+        }
+        if keys.contains(evdev::Key::BTN_LEFT) {
+            log::info!(
+                "Matched touchpad button device: {} [{}]",
+                path.display(),
+                name
+            );
+            return Some((path, device));
+        }
+    }
+
+    None
 }

@@ -1,21 +1,22 @@
 use anyhow::Result;
 use clap::Parser;
 use log;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 use std::thread;
 
 mod config;
+mod decision_log;
 mod device_discovery;
-mod interrupt;
 mod momentum;
-mod natural_scroll;
 mod touchpad;
 mod virtual_device;
 
-/// Inertial scrolling and pointer movement daemon for Linux touchpads.
+/// Pointer inertia daemon for Linux touchpads.
 ///
 /// Passively monitors touchpad events (no device grab) and injects
-/// momentum scroll/pointer events via a virtual uinput device.
+/// momentum pointer events via a virtual uinput device.
 #[derive(Parser, Debug, Clone)]
 #[command(name = "rinertia", version, about)]
 pub struct Args {
@@ -30,54 +31,6 @@ pub struct Args {
     /// Match touchpad by name substring (e.g. "ELAN", "Synaptics")
     #[arg(short = 'n', long)]
     pub device_name: Option<String>,
-
-    /// Operating mode: scroll, pointer, both
-    #[arg(long)]
-    pub mode: Option<String>,
-
-    /// Damping coefficient (0.0 ~ 1.0). Higher = more resistance = faster deceleration
-    #[arg(long)]
-    pub damping: Option<f64>,
-
-    /// Damping curve: "dual" (expo + linear tail), "expo" (pure exponential), "macos" (macOS-style time constant)
-    #[arg(long)]
-    pub damping_curve: Option<String>,
-
-    /// Velocity threshold to transition from exponential to linear phase (hires per 8ms)
-    #[arg(long)]
-    pub phase_threshold: Option<f64>,
-
-    /// Duration of linear deceleration phase in ms
-    #[arg(long)]
-    pub linear_decel_ms: Option<i32>,
-
-    /// Linear phase stops when output reaches this value (hires units)
-    #[arg(long)]
-    pub linear_stop_hires: Option<i32>,
-
-    /// [macos curve] Time constant in ms controlling deceleration feel (default: 325)
-    #[arg(long)]
-    pub time_constant_ms: Option<f64>,
-
-    /// [macos curve] Velocity threshold to stop momentum (hires/sec, default: 60.0)
-    #[arg(long)]
-    pub stop_threshold: Option<f64>,
-
-    /// Tail scroll: emit minimum hires for this many ms after deceleration ends (0 = off)
-    #[arg(long)]
-    pub tail_scroll_ms: Option<u64>,
-
-    /// Minimum velocity to trigger scroll momentum
-    #[arg(long)]
-    pub min_scroll_velocity: Option<f64>,
-
-    /// Scroll speed multiplier
-    #[arg(long)]
-    pub scroll_factor: Option<f64>,
-
-    /// Touchpad-to-hires conversion factor
-    #[arg(long)]
-    pub tp_to_hires: Option<f64>,
 
     /// Max age (ms) of velocity samples; older samples are discarded (default: 150)
     #[arg(long)]
@@ -95,21 +48,13 @@ pub struct Args {
     #[arg(long)]
     pub pointer_min_velocity: Option<f64>,
 
-    /// Multitouch cooldown in ms
-    #[arg(long)]
-    pub multitouch_cooldown: Option<u64>,
-
-    /// Disable keyboard/mouse interrupt detection
-    #[arg(long)]
-    pub no_interrupt: bool,
-
-    /// Enable natural scrolling direction (finger moves with content, not scrollbar)
-    #[arg(long)]
-    pub natural_scroll: bool,
-
     /// Dry mode: don't create virtual device, only log
     #[arg(long)]
     pub dry: bool,
+
+    /// Append inertia start/reject decisions to this file
+    #[arg(long)]
+    pub decision_log: Option<String>,
 
     /// Log level (off, error, warn, info, debug, trace)
     #[arg(long)]
@@ -120,35 +65,17 @@ pub struct Args {
 pub struct ResolvedArgs {
     pub device: Option<String>,
     pub device_name: Option<String>,
-    pub mode: String,
-    pub damping: f64,
-    pub damping_curve: String,
-    pub phase_threshold: f64,
-    pub linear_decel_ms: i32,
-    pub linear_stop_hires: i32,
-    pub time_constant_ms: f64,
-    pub stop_threshold: f64,
-    pub tail_scroll_ms: u64,
-    pub min_scroll_velocity: f64,
-    pub scroll_factor: f64,
-    pub tp_to_hires: f64,
     pub velocity_stale_ms: u64,
     pub pointer_drag: f64,
     pub pointer_speed_factor: f64,
     pub pointer_min_velocity: f64,
-    pub multitouch_cooldown: u64,
-    pub natural_scroll: bool,
-    pub no_interrupt: bool,
     pub dry: bool,
+    pub decision_log: Option<String>,
     pub log_level: String,
 }
 
 #[derive(Debug, Clone)]
 pub enum MomentumMessage {
-    StartScroll {
-        velocity_hires_per_sec: f64,
-        axis: ScrollAxis,
-    },
     StartPointer {
         vx: f64,
         vy: f64,
@@ -156,10 +83,10 @@ pub enum MomentumMessage {
     Stop,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ScrollAxis {
-    Vertical,
-    Horizontal,
+#[derive(Debug, Clone, Copy)]
+pub enum EngineStatus {
+    PointerActive,
+    PointerIdle,
 }
 
 fn main() -> Result<()> {
@@ -177,7 +104,7 @@ fn main() -> Result<()> {
         None => (config::Config::default(), false),
     };
 
-    let mut args = config::resolve(&cli, &cfg);
+    let args = config::resolve(&cli, &cfg);
 
     env_logger::Builder::new()
         .filter_module(
@@ -195,33 +122,18 @@ fn main() -> Result<()> {
     if cli.config.is_some() && !config_missing {
         log::info!("Loaded config: {}", cli.config.as_deref().unwrap());
     }
-    config::warn_unused_curve_params(&cli, &args);
+
+    let decision_log = match &args.decision_log {
+        Some(path) => {
+            log::info!("Decision log: {}", path);
+            decision_log::DecisionLog::open(std::path::Path::new(path))?
+        }
+        None => decision_log::DecisionLog::disabled(),
+    };
 
     let touchpad_path =
         device_discovery::find_touchpad(args.device.as_deref(), args.device_name.as_deref())?;
     log::info!("Using touchpad: {}", touchpad_path.display());
-
-    let sysname = touchpad_path
-        .file_name()
-        .and_then(|f| f.to_str())
-        .unwrap_or("event0");
-
-    let user_explicit =
-        cli.natural_scroll || cfg.scroll.as_ref().and_then(|s| s.natural_scroll).is_some();
-
-    if let Some(detected) = natural_scroll::detect(sysname) {
-        if user_explicit && args.natural_scroll != detected {
-            log::warn!(
-                "natural_scroll={} (from CLI/config) differs from desktop setting ({}). \
-                 Momentum direction may not match normal scrolling.",
-                args.natural_scroll,
-                detected
-            );
-        }
-        if !user_explicit {
-            args.natural_scroll = detected;
-        }
-    }
 
     let vdev = if args.dry {
         log::info!("Dry mode: no virtual device created");
@@ -235,16 +147,11 @@ fn main() -> Result<()> {
             );
             std::process::exit(1);
         }
-        let enable_scroll = args.mode == "scroll" || args.mode == "both";
-        let enable_pointer = args.mode == "pointer" || args.mode == "both";
-        Some(virtual_device::VirtualDevice::new(
-            enable_scroll,
-            enable_pointer,
-        )?)
+        Some(virtual_device::VirtualDevice::new()?)
     };
 
     let (tx, rx) = mpsc::channel::<MomentumMessage>();
-    let tx_interrupt = tx.clone();
+    let (status_tx, status_rx) = mpsc::channel::<EngineStatus>();
 
     let tp_device = evdev::Device::open(&touchpad_path)?;
     let tp_phys = device_discovery::get_phys(&tp_device);
@@ -254,32 +161,49 @@ fn main() -> Result<()> {
         tp_phys.as_deref().unwrap_or("?")
     );
 
+    let click_inhibit = Arc::new(AtomicBool::new(false));
+    let button_thread = device_discovery::find_touchpad_button_device(
+        &touchpad_path,
+        tp_phys.as_deref(),
+    )
+    .map(|(_path, button_device)| {
+        let tx_button = tx.clone();
+        let click_inhibit_button = click_inhibit.clone();
+        let decision_log_button = decision_log.clone();
+        thread::Builder::new()
+            .name("button-listener".into())
+            .spawn(move || {
+                touchpad::run_button_listener(
+                    button_device,
+                    tx_button,
+                    click_inhibit_button,
+                    decision_log_button,
+                );
+            })
+    })
+    .transpose()?;
+
     let args_clone = args.clone();
+    let click_inhibit_listener = click_inhibit.clone();
+    let decision_log_listener = decision_log.clone();
     let touchpad_thread = thread::Builder::new()
         .name("listener".into())
         .spawn(move || {
-            touchpad::run_listener(tp_device, tx, &args_clone);
+            touchpad::run_listener(
+                tp_device,
+                tx,
+                status_rx,
+                &args_clone,
+                click_inhibit_listener,
+                decision_log_listener,
+            );
         })?;
 
-    let interrupt_thread = if !args.no_interrupt {
-        let tp_phys_clone = tp_phys.clone();
-        Some(
-            thread::Builder::new()
-                .name("interrupt".into())
-                .spawn(move || {
-                    interrupt::run_interrupt_detector(tx_interrupt, tp_phys_clone.as_deref());
-                })?,
-        )
-    } else {
-        log::info!("Interrupt detection disabled");
-        None
-    };
-
-    log::info!("Momentum engine started (mode={})", args.mode);
-    momentum::run_engine(rx, vdev, &args);
+    log::info!("Momentum engine started");
+    momentum::run_engine(rx, status_tx, vdev, &args, decision_log);
 
     let _ = touchpad_thread.join();
-    if let Some(t) = interrupt_thread {
+    if let Some(t) = button_thread {
         let _ = t.join();
     }
 

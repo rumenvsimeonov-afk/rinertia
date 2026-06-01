@@ -2,10 +2,9 @@
 name = "rinertia"
 version = "0.1.0"
 edition = "2024"
-description = "Inertial scrolling and pointer movement daemon for Linux touchpads"
+description = "Pointer inertia daemon for Linux touchpads"
 license = "MIT"
-repository = "https://github.com/JimMoen/rinertia"
-keywords = ["touchpad", "inertia", "scroll", "evdev", "uinput"]
+keywords = ["touchpad", "inertia", "pointer", "evdev", "uinput"]
 
 [dependencies]
 evdev = "0.12"
@@ -15,6 +14,7 @@ serde = { version = "1", features = ["derive"] }
 log = "0.4"
 env_logger = "0.11"
 anyhow = "1"
+libc = "0.2"
 nix = { version = "0.29", features = ["ioctl"] }
 
 [profile.release]
