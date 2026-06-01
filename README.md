@@ -64,6 +64,33 @@ For a system install:
 sudo install -m 0755 target/release/rinertia /usr/local/bin/rinertia
 ```
 
+## Install script
+
+For a normal system install, run:
+
+```bash
+./install.sh
+```
+
+The script builds the release binary, installs it as
+`/usr/local/bin/rinertia`, installs the sample config as
+`/etc/rinertia/config.toml` if no config exists yet, installs the udev rule,
+and enables an autostart service.
+
+It detects `systemd` or SysV init automatically. You can force one mode:
+
+```bash
+INIT_STYLE=systemd ./install.sh
+INIT_STYLE=sysv ./install.sh
+INIT_STYLE=both ./install.sh
+```
+
+To install files without starting/restarting the daemon:
+
+```bash
+START_SERVICE=0 ./install.sh
+```
+
 ## Quick test
 
 Run with the currently tested parameters:
