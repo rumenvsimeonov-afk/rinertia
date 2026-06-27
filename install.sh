@@ -11,6 +11,7 @@ BIN_DIR=$PREFIX/bin
 BIN_PATH=$BIN_DIR/rinertia
 CONFIG_DIR=$SYSCONFDIR/rinertia
 CONFIG_PATH=$CONFIG_DIR/config.toml
+X11_ENV_PATH=$CONFIG_DIR/x11.env
 UDEV_RULE=/etc/udev/rules.d/99-rinertia.rules
 
 if [ "$(id -u)" -eq 0 ]; then
@@ -90,6 +91,48 @@ install_sysv_service()
     fi
 }
 
+install_x11_environment()
+{
+    if [ -f "$X11_ENV_PATH" ]; then
+        echo "Keeping existing X11 environment: $X11_ENV_PATH"
+        return
+    fi
+
+    SESSION_USER=${SUDO_USER:-$(id -un)}
+    if command -v getent >/dev/null 2>&1; then
+        SESSION_HOME=$(getent passwd "$SESSION_USER" | cut -d: -f6)
+    else
+        SESSION_HOME=${HOME:-}
+    fi
+
+    DISPLAY_VALUE=${DISPLAY:-:0}
+    XAUTHORITY_VALUE=${XAUTHORITY:-$SESSION_HOME/.Xauthority}
+    X11_ENV_TMP=$(mktemp)
+    printf 'DISPLAY=%s\nXAUTHORITY=%s\n' "$DISPLAY_VALUE" "$XAUTHORITY_VALUE" \
+        > "$X11_ENV_TMP"
+    run_root install -m 0644 "$X11_ENV_TMP" "$X11_ENV_PATH"
+    rm -f "$X11_ENV_TMP"
+    echo "Installed X11 environment: $X11_ENV_PATH"
+}
+
+remove_legacy_rc_local_entry()
+{
+    RC_LOCAL=/etc/rc.local
+    if [ ! -f "$RC_LOCAL" ]; then
+        return
+    fi
+
+    if ! grep -q '/rinertia_project/target/release/rinertia' "$RC_LOCAL"; then
+        return
+    fi
+
+    echo "Removing legacy rinertia command from $RC_LOCAL..."
+    RC_LOCAL_TMP=$(mktemp)
+    sed '\|/rinertia_project/target/release/rinertia|d' "$RC_LOCAL" > "$RC_LOCAL_TMP"
+    run_root install -m 0755 "$RC_LOCAL_TMP" "$RC_LOCAL"
+    rm -f "$RC_LOCAL_TMP"
+}
+
 cd "$PROJECT_DIR"
 
 echo "Building rinertia..."
@@ -106,6 +149,7 @@ if [ ! -f "$CONFIG_PATH" ]; then
 else
     echo "Keeping existing config: $CONFIG_PATH"
 fi
+install_x11_environment
 
 echo "Installing udev rule..."
 run_root install -m 0644 "$PROJECT_DIR/dist/99-rinertia.rules" "$UDEV_RULE"
@@ -113,6 +157,8 @@ if command -v udevadm >/dev/null 2>&1; then
     run_root udevadm control --reload-rules || true
     run_root udevadm trigger || true
 fi
+
+remove_legacy_rc_local_entry
 
 STYLE=$(detect_init_style)
 case "$STYLE" in

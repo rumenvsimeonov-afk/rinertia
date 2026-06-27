@@ -22,12 +22,16 @@ pub struct PointerConfig {
     pub speed_factor: Option<f64>,
     pub min_velocity: Option<f64>,
     pub velocity_stale_ms: Option<u64>,
+    pub max_duration_ms: Option<u64>,
+    pub stop_touch_ms: Option<u64>,
 }
 
 pub const DEFAULT_VELOCITY_STALE_MS: u64 = 150;
 pub const DEFAULT_POINTER_DRAG: f64 = 0.01;
 pub const DEFAULT_POINTER_SPEED_FACTOR: f64 = 0.0075;
 pub const DEFAULT_POINTER_MIN_VELOCITY: f64 = 100.0;
+pub const DEFAULT_POINTER_MAX_DURATION_MS: u64 = 0;
+pub const DEFAULT_STOP_TOUCH_MS: u64 = 70;
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
 pub fn load(path: &Path) -> Result<Config> {
@@ -68,8 +72,21 @@ pub fn resolve(cli: &crate::Args, cfg: &Config) -> crate::ResolvedArgs {
                 .and_then(|p| p.min_velocity)
                 .unwrap_or(DEFAULT_POINTER_MIN_VELOCITY)
         }),
+        pointer_max_duration_ms: cli.pointer_max_duration_ms.unwrap_or_else(|| {
+            pointer
+                .and_then(|p| p.max_duration_ms)
+                .unwrap_or(DEFAULT_POINTER_MAX_DURATION_MS)
+        }),
+        stop_touch_ms: cli
+            .stop_touch_ms
+            .or_else(|| pointer.and_then(|p| p.stop_touch_ms))
+            .unwrap_or(DEFAULT_STOP_TOUCH_MS)
+            .clamp(10, 2_000),
         dry: cli.dry,
-        decision_log: cli.decision_log.clone().or_else(|| cfg.decision_log.clone()),
+        decision_log: cli
+            .decision_log
+            .clone()
+            .or_else(|| cfg.decision_log.clone()),
         log_level: cli.log_level.clone().unwrap_or_else(|| {
             cfg.log_level
                 .clone()

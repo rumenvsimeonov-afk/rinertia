@@ -20,6 +20,8 @@ touchpad, so expect to adjust the parameters for other hardware.
   bounce or skin elasticity.
 - Temporarily grabs the real touchpad only while pointer inertia is active, so
   the touch used to stop inertia is hidden from the normal touchpad driver.
+- On X11, observes the visible cursor position and stops inertia when emitted
+  movement is repeatedly blocked by a screen edge.
 
 It does not implement scrolling. If your existing Synaptics/libinput setup
 already has good scroll behavior, this daemon leaves that path alone.
@@ -75,7 +77,8 @@ For a normal system install, run:
 The script builds the release binary, installs it as
 `/usr/local/bin/rinertia`, installs the sample config as
 `/etc/rinertia/config.toml` if no config exists yet, installs the udev rule,
-and enables an autostart service.
+records the current X11 display in `/etc/rinertia/x11.env`, and enables an
+autostart service.
 
 It detects `systemd` or SysV init automatically. You can force one mode:
 
@@ -138,6 +141,8 @@ Important parameters:
 | `pointer.speed_factor` | Converts touchpad units to virtual mouse movement. |
 | `pointer.min_velocity` | Minimum release velocity required to start inertia. |
 | `pointer.velocity_stale_ms` | Maximum age of release samples used for velocity. |
+| `pointer.max_duration_ms` | Optional safety timeout; `0` disables it. |
+| `pointer.stop_touch_ms` | Required touch duration to stop active inertia. |
 | `decision_log` | Optional path for start/reject diagnostics. |
 | `log_level` | `error`, `warn`, `info`, `debug`, or `trace`. |
 
@@ -183,6 +188,14 @@ The current behavior is tuned for practical desktop use, not for strict input
 correctness. Test carefully before using it on machines where accidental
 drag-and-drop would be costly.
 
+## Development credit
+
+The pointer-only fork and the behavior documented here were implemented by
+OpenAI Codex at the request of Rumen V. Simeonov
+([`rumenvsimeonov-afk`](https://github.com/rumenvsimeonov-afk)). Rumen defined
+the required touchpad behavior and performed the practical testing on real
+hardware.
+
 ## Origin and license
 
 This is a modified version/fork of the original MIT-licensed `rinertia` project
@@ -194,6 +207,8 @@ The main changes in this fork are:
 - kept only pointer inertia;
 - added touch/click safety filters;
 - added temporary `EVIOCGRAB` while pointer inertia is active;
+- added single-instance protection;
+- added X11 feedback to stop inertia when the visible pointer is blocked;
 - added decision logging for start/reject/stop diagnostics;
 - tuned behavior for Synaptics-style touchpad setups that already provide
   native inertial scrolling.

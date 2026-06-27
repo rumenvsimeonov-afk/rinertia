@@ -15,7 +15,6 @@ const LIFT_TAIL_SPEED_RATIO: f64 = 0.45;
 const MIN_TOUCH_US: u64 = 130_000;
 const MIN_MOTION_DISTANCE: f64 = 40.0;
 const RETOUCH_ARM_DELAY_US: u64 = 200_000;
-const RETOUCH_CONFIRM_US: u64 = 100_000;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum ListenerState {
     Idle,
@@ -203,8 +202,8 @@ impl MotionRing {
             ) {
                 let tail_speed = tail.path_speed();
                 let previous_speed = previous.path_speed();
-                let trim_threshold = (previous_speed * LIFT_TAIL_SPEED_RATIO)
-                    .max(min_velocity * 2.0);
+                let trim_threshold =
+                    (previous_speed * LIFT_TAIL_SPEED_RATIO).max(min_velocity * 2.0);
 
                 if previous_speed >= min_velocity && tail_speed < trim_threshold {
                     end = previous_end;
@@ -289,7 +288,10 @@ fn grab_touchpad(
             log::debug!("Touchpad grabbed: {}", reason);
         }
         Err(e) => {
-            decision_log.line(format!("TOUCHPAD_GRAB_FAILED reason={} error={}", reason, e));
+            decision_log.line(format!(
+                "TOUCHPAD_GRAB_FAILED reason={} error={}",
+                reason, e
+            ));
             log::warn!("Could not grab touchpad: {}", e);
         }
     }
@@ -312,7 +314,10 @@ fn ungrab_touchpad(
             log::debug!("Touchpad ungrabbed: {}", reason);
         }
         Err(e) => {
-            decision_log.line(format!("TOUCHPAD_UNGRAB_FAILED reason={} error={}", reason, e));
+            decision_log.line(format!(
+                "TOUCHPAD_UNGRAB_FAILED reason={} error={}",
+                reason, e
+            ));
             log::warn!("Could not ungrab touchpad: {}", e);
         }
     }
@@ -327,6 +332,7 @@ pub fn run_listener(
     decision_log: DecisionLog,
 ) {
     let stale_us = args.velocity_stale_ms * 1000;
+    let stop_touch_us = args.stop_touch_ms.saturating_mul(1_000);
     if let Err(e) = set_nonblocking(&device) {
         log::warn!("Could not set touchpad fd nonblocking: {}", e);
     }
@@ -405,8 +411,7 @@ pub fn run_listener(
                 InputEventKind::Key(key) => match key {
                     Key::BTN_TOUCH => {
                         if event.value() == 1 {
-                            if awaiting_momentum_stop_touch
-                                || (touchpad_grabbed && momentum_active)
+                            if awaiting_momentum_stop_touch || (touchpad_grabbed && momentum_active)
                             {
                                 let armed_after_us = if awaiting_momentum_stop_touch {
                                     momentum_stop_armed_after_us
@@ -431,7 +436,7 @@ pub fn run_listener(
                                 decision_log.line(format!(
                                     "RETOUCH_PENDING source=BTN_TOUCH reason=finger_down armed_late_by_us={} confirm_us={}",
                                     now_us.saturating_sub(armed_after_us),
-                                    RETOUCH_CONFIRM_US
+                                    stop_touch_us
                                 ));
                                 arm_retouch_confirm_timer(
                                     tx.clone(),
@@ -439,6 +444,7 @@ pub fn run_listener(
                                     Arc::clone(&retouch_active_token),
                                     Arc::clone(&retouch_stopped_token),
                                     current_retouch_token,
+                                    stop_touch_us,
                                 );
                                 awaiting_momentum_stop_touch = false;
                                 state = ListenerState::MomentumRetouch;
@@ -499,11 +505,11 @@ pub fn run_listener(
                                         && retouch_stopped_token.load(Ordering::SeqCst)
                                             == current_retouch_token;
                                     retouch_active_token.fetch_add(1, Ordering::SeqCst);
-                                    if duration_us < RETOUCH_CONFIRM_US && !already_stopped {
+                                    if duration_us < stop_touch_us && !already_stopped {
                                         decision_log.line(format!(
                                             "RETOUCH_IGNORED source=BTN_TOUCH reason=short_touch duration_us={} confirm_us={}",
                                             duration_us,
-                                            RETOUCH_CONFIRM_US
+                                            stop_touch_us
                                         ));
                                         log::debug!(
                                             "Momentum retouch ignored: short touch {}us",
@@ -517,7 +523,7 @@ pub fn run_listener(
                                         decision_log.line(format!(
                                             "RETOUCH_RELEASE reason=after_stop duration_us={} confirm_us={}",
                                             duration_us,
-                                            RETOUCH_CONFIRM_US
+                                            stop_touch_us
                                         ));
                                         log::debug!(
                                             "Momentum retouch released after stop: {}us",
@@ -525,9 +531,8 @@ pub fn run_listener(
                                         );
                                         momentum_active = false;
                                         awaiting_momentum_stop_touch = false;
-                                        grab_actions.push(GrabAction::Ungrab(
-                                            "retouch_release_after_stop",
-                                        ));
+                                        grab_actions
+                                            .push(GrabAction::Ungrab("retouch_release_after_stop"));
                                     } else {
                                         let _ = tx.send(MomentumMessage::Stop);
                                         retouch_stopped_token
@@ -535,7 +540,7 @@ pub fn run_listener(
                                         decision_log.line(format!(
                                             "RETOUCH_STOP reason=confirmed_on_release duration_us={} confirm_us={}",
                                             duration_us,
-                                            RETOUCH_CONFIRM_US
+                                            stop_touch_us
                                         ));
                                         log::debug!(
                                             "Momentum retouch stopped on release: {}us",
@@ -667,8 +672,7 @@ fn maybe_start_pointer(
     if touch_duration_us < MIN_TOUCH_US {
         decision_log.line(format!(
             "REJECT reason=touch_too_short {} min_touch_us={}",
-            context,
-            MIN_TOUCH_US
+            context, MIN_TOUCH_US
         ));
         log::debug!(
             "Pointer lift ignored: touch too short touch={}us threshold={}us",
@@ -681,8 +685,7 @@ fn maybe_start_pointer(
     if motion.total_distance() < MIN_MOTION_DISTANCE {
         decision_log.line(format!(
             "REJECT reason=movement_too_short {} min_total_dist={:.1}",
-            context,
-            MIN_MOTION_DISTANCE
+            context, MIN_MOTION_DISTANCE
         ));
         log::debug!(
             "Pointer lift ignored: movement too short total_dist={:.1} threshold={:.1}",
@@ -697,8 +700,7 @@ fn maybe_start_pointer(
     else {
         decision_log.line(format!(
             "REJECT reason=no_fresh_velocity {} stale_us={}",
-            context,
-            stale_us
+            context, stale_us
         ));
         log::debug!("Pointer lift ignored: no fresh velocity");
         return false;
@@ -711,12 +713,7 @@ fn maybe_start_pointer(
     if speed < args.pointer_min_velocity {
         decision_log.line(format!(
             "REJECT reason=velocity_too_low {} {} vx={:.1} vy={:.1} speed={:.1} min_speed={:.1}",
-            context,
-            velocity_context,
-            vx,
-            vy,
-            speed,
-            args.pointer_min_velocity
+            context, velocity_context, vx, vy, speed, args.pointer_min_velocity
         ));
         log::debug!(
             "Pointer too slow: vx={:.1} vy={:.1} speed={:.1} threshold={:.1}",
@@ -810,9 +807,10 @@ fn arm_retouch_confirm_timer(
     active_token: Arc<AtomicU64>,
     stopped_token: Arc<AtomicU64>,
     token: u64,
+    stop_touch_us: u64,
 ) {
     thread::spawn(move || {
-        thread::sleep(time::Duration::from_micros(RETOUCH_CONFIRM_US));
+        thread::sleep(time::Duration::from_micros(stop_touch_us));
         if active_token.load(Ordering::SeqCst) != token {
             return;
         }
@@ -821,7 +819,7 @@ fn arm_retouch_confirm_timer(
         stopped_token.store(token, Ordering::SeqCst);
         decision_log.line(format!(
             "RETOUCH_STOP reason=confirmed_by_timer duration_us={} confirm_us={}",
-            RETOUCH_CONFIRM_US, RETOUCH_CONFIRM_US
+            stop_touch_us, stop_touch_us
         ));
     });
 }

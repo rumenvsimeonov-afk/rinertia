@@ -9,9 +9,11 @@ use std::thread;
 mod config;
 mod decision_log;
 mod device_discovery;
+mod instance_lock;
 mod momentum;
 mod touchpad;
 mod virtual_device;
+mod x11_pointer;
 
 /// Pointer inertia daemon for Linux touchpads.
 ///
@@ -48,6 +50,14 @@ pub struct Args {
     #[arg(long)]
     pub pointer_min_velocity: Option<f64>,
 
+    /// Maximum pointer inertia duration in milliseconds (0 disables the limit)
+    #[arg(long)]
+    pub pointer_max_duration_ms: Option<u64>,
+
+    /// Touch duration in milliseconds required to stop active inertia
+    #[arg(long)]
+    pub stop_touch_ms: Option<u64>,
+
     /// Dry mode: don't create virtual device, only log
     #[arg(long)]
     pub dry: bool,
@@ -69,6 +79,8 @@ pub struct ResolvedArgs {
     pub pointer_drag: f64,
     pub pointer_speed_factor: f64,
     pub pointer_min_velocity: f64,
+    pub pointer_max_duration_ms: u64,
+    pub stop_touch_ms: u64,
     pub dry: bool,
     pub decision_log: Option<String>,
     pub log_level: String,
@@ -76,10 +88,7 @@ pub struct ResolvedArgs {
 
 #[derive(Debug, Clone)]
 pub enum MomentumMessage {
-    StartPointer {
-        vx: f64,
-        vy: f64,
-    },
+    StartPointer { vx: f64, vy: f64 },
     Stop,
 }
 
@@ -113,6 +122,8 @@ fn main() -> Result<()> {
         )
         .parse_default_env()
         .init();
+
+    let _instance_lock = instance_lock::acquire()?;
 
     if config_missing {
         log::error!("Config file not found: {}", cli.config.as_deref().unwrap());
@@ -162,26 +173,24 @@ fn main() -> Result<()> {
     );
 
     let click_inhibit = Arc::new(AtomicBool::new(false));
-    let button_thread = device_discovery::find_touchpad_button_device(
-        &touchpad_path,
-        tp_phys.as_deref(),
-    )
-    .map(|(_path, button_device)| {
-        let tx_button = tx.clone();
-        let click_inhibit_button = click_inhibit.clone();
-        let decision_log_button = decision_log.clone();
-        thread::Builder::new()
-            .name("button-listener".into())
-            .spawn(move || {
-                touchpad::run_button_listener(
-                    button_device,
-                    tx_button,
-                    click_inhibit_button,
-                    decision_log_button,
-                );
+    let button_thread =
+        device_discovery::find_touchpad_button_device(&touchpad_path, tp_phys.as_deref())
+            .map(|(_path, button_device)| {
+                let tx_button = tx.clone();
+                let click_inhibit_button = click_inhibit.clone();
+                let decision_log_button = decision_log.clone();
+                thread::Builder::new()
+                    .name("button-listener".into())
+                    .spawn(move || {
+                        touchpad::run_button_listener(
+                            button_device,
+                            tx_button,
+                            click_inhibit_button,
+                            decision_log_button,
+                        );
+                    })
             })
-    })
-    .transpose()?;
+            .transpose()?;
 
     let args_clone = args.clone();
     let click_inhibit_listener = click_inhibit.clone();

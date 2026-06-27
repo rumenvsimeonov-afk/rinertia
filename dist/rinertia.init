@@ -18,10 +18,16 @@ DAEMON=/usr/local/bin/rinertia
 DAEMON_ARGS="--config /etc/rinertia/config.toml"
 PIDFILE=/run/$NAME.pid
 SCRIPTNAME=/etc/init.d/$NAME
+X11_ENV=/etc/rinertia/x11.env
 
 [ -x "$DAEMON" ] || exit 0
 
 . /lib/lsb/init-functions
+
+if [ -r "$X11_ENV" ]; then
+    . "$X11_ENV"
+    export DISPLAY XAUTHORITY
+fi
 
 is_running()
 {

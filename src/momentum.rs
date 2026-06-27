@@ -3,6 +3,7 @@ use std::time::{Duration, Instant};
 
 use crate::decision_log::DecisionLog;
 use crate::virtual_device::VirtualDevice;
+use crate::x11_pointer::PointerBlockDetector;
 use crate::{EngineStatus, MomentumMessage};
 
 const POINTER_TICK: Duration = Duration::from_micros(8_000);
@@ -31,9 +32,11 @@ pub fn run_engine(
     let mut x_accum: f64 = 0.0;
     let mut y_accum: f64 = 0.0;
     let mut last_tick = Instant::now();
+    let mut momentum_started_at = Instant::now();
     let mut emit_count: u64 = 0;
     let mut total_dx: i64 = 0;
     let mut total_dy: i64 = 0;
+    let mut pointer_block_detector = PointerBlockDetector::new();
 
     loop {
         match state {
@@ -56,6 +59,8 @@ pub fn run_engine(
                         total_dx = 0;
                         total_dy = 0;
                         last_tick = Instant::now();
+                        momentum_started_at = last_tick;
+                        pointer_block_detector.reset();
                         state = EngineState::PointerMomentum;
                         send_status(&status_tx, EngineStatus::PointerActive);
                         decision_log.line(format!(
@@ -99,6 +104,8 @@ pub fn run_engine(
                         total_dx = 0;
                         total_dy = 0;
                         last_tick = Instant::now();
+                        momentum_started_at = last_tick;
+                        pointer_block_detector.reset();
                         decision_log.line(format!(
                             "ENGINE_RESTART vx={:.1} vy={:.1} speed={:.1}",
                             vx,
@@ -118,6 +125,46 @@ pub fn run_engine(
                 let now = Instant::now();
                 let dt = now.duration_since(last_tick).as_secs_f64();
                 last_tick = now;
+
+                if pointer_block_detector.pointer_is_blocked() {
+                    vx = 0.0;
+                    vy = 0.0;
+                    x_accum = 0.0;
+                    y_accum = 0.0;
+                    decision_log.line(format!(
+                        "ENGINE_DONE reason=pointer_blocked emit_count={} total_dx={} total_dy={}",
+                        emit_count, total_dx, total_dy
+                    ));
+                    log::debug!("PointerMomentum stop: X11 pointer is blocked");
+                    state = EngineState::Idle;
+                    send_status(&status_tx, EngineStatus::PointerIdle);
+                    continue;
+                }
+
+                let elapsed = now.duration_since(momentum_started_at);
+                if args.pointer_max_duration_ms > 0
+                    && elapsed >= Duration::from_millis(args.pointer_max_duration_ms)
+                {
+                    vx = 0.0;
+                    vy = 0.0;
+                    x_accum = 0.0;
+                    y_accum = 0.0;
+                    decision_log.line(format!(
+                        "ENGINE_DONE reason=max_duration elapsed_ms={} max_duration_ms={} emit_count={} total_dx={} total_dy={}",
+                        elapsed.as_millis(),
+                        args.pointer_max_duration_ms,
+                        emit_count,
+                        total_dx,
+                        total_dy
+                    ));
+                    log::debug!(
+                        "PointerMomentum stop: maximum duration {}ms",
+                        args.pointer_max_duration_ms
+                    );
+                    state = EngineState::Idle;
+                    send_status(&status_tx, EngineStatus::PointerIdle);
+                    continue;
+                }
 
                 let decay = (-(dt * 1000.0) / pointer_tau_ms).exp();
                 vx *= decay;
@@ -175,6 +222,9 @@ pub fn run_engine(
                         speed
                     );
                     emit_pointer(&mut vdev, dx, dy);
+                    if vdev.is_some() {
+                        pointer_block_detector.record_emission(dx, dy);
+                    }
                 }
             }
         }

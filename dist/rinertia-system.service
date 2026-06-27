@@ -5,6 +5,7 @@ Wants=systemd-udevd.service
 
 [Service]
 Type=simple
+EnvironmentFile=-/etc/rinertia/x11.env
 ExecStart=/usr/local/bin/rinertia --config /etc/rinertia/config.toml
 Restart=on-failure
 RestartSec=2
