@@ -348,6 +348,9 @@ pub fn run_listener(
     let retouch_stopped_token = Arc::new(AtomicU64::new(0));
     let mut retouch_start_us: u64 = 0;
     let mut current_retouch_token: u64 = 0;
+    let mut retouch_ptr_x: i32 = 0;
+    let mut retouch_ptr_y: i32 = 0;
+    let mut retouch_motion_forwarded = false;
     let mut motion = MotionRing::new();
     let mut touchpad_grabbed = false;
     let mut momentum_active = false;
@@ -395,13 +398,45 @@ pub fn run_listener(
             match event.kind() {
                 InputEventKind::AbsAxis(axis) => match axis {
                     AbsoluteAxisType::ABS_X => {
-                        ptr_x = event.value();
+                        let new_x = event.value();
+                        if state == ListenerState::MomentumRetouch {
+                            let dx = new_x - retouch_ptr_x;
+                            retouch_ptr_x = new_x;
+                            if dx != 0
+                                && retouch_is_stopped(current_retouch_token, &retouch_stopped_token)
+                            {
+                                mark_retouch_motion_forwarded(
+                                    &mut retouch_motion_forwarded,
+                                    &decision_log,
+                                    dx,
+                                    0,
+                                );
+                                let _ = tx.send(MomentumMessage::ContinuePointer { dx, dy: 0 });
+                            }
+                        }
+                        ptr_x = new_x;
                         if state == ListenerState::OneFingerMove {
                             motion.push(ptr_x, ptr_y, now_us);
                         }
                     }
                     AbsoluteAxisType::ABS_Y => {
-                        ptr_y = event.value();
+                        let new_y = event.value();
+                        if state == ListenerState::MomentumRetouch {
+                            let dy = new_y - retouch_ptr_y;
+                            retouch_ptr_y = new_y;
+                            if dy != 0
+                                && retouch_is_stopped(current_retouch_token, &retouch_stopped_token)
+                            {
+                                mark_retouch_motion_forwarded(
+                                    &mut retouch_motion_forwarded,
+                                    &decision_log,
+                                    0,
+                                    dy,
+                                );
+                                let _ = tx.send(MomentumMessage::ContinuePointer { dx: 0, dy });
+                            }
+                        }
+                        ptr_y = new_y;
                         if state == ListenerState::OneFingerMove {
                             motion.push(ptr_x, ptr_y, now_us);
                         }
@@ -447,6 +482,9 @@ pub fn run_listener(
                                     stop_touch_us,
                                 );
                                 awaiting_momentum_stop_touch = false;
+                                retouch_ptr_x = ptr_x;
+                                retouch_ptr_y = ptr_y;
+                                retouch_motion_forwarded = false;
                                 state = ListenerState::MomentumRetouch;
                                 log::debug!("State -> MomentumRetouch");
                                 continue;
@@ -553,6 +591,7 @@ pub fn run_listener(
                                         ));
                                     }
                                     current_retouch_token = 0;
+                                    retouch_motion_forwarded = false;
                                     state = ListenerState::Idle;
                                 }
                                 ListenerState::Idle => {}
@@ -725,24 +764,34 @@ fn maybe_start_pointer(
         return false;
     }
 
+    let start_vx = vx * args.pointer_start_speed_multiplier;
+    let start_vy = vy * args.pointer_start_speed_multiplier;
+    let start_speed = speed * args.pointer_start_speed_multiplier;
     decision_log.line(format!(
-        "START reason=criteria_met {} {} vx={:.1} vy={:.1} speed={:.1} min_touch_us={} min_total_dist={:.1} min_speed={:.1}",
+        "START reason=criteria_met {} {} release_vx={:.1} release_vy={:.1} release_speed={:.1} start_vx={:.1} start_vy={:.1} start_speed={:.1} start_multiplier={:.3} min_touch_us={} min_total_dist={:.1} min_speed={:.1}",
         context,
         velocity_context,
         vx,
         vy,
         speed,
+        start_vx,
+        start_vy,
+        start_speed,
+        args.pointer_start_speed_multiplier,
         MIN_TOUCH_US,
         MIN_MOTION_DISTANCE,
         args.pointer_min_velocity
     ));
     log::debug!(
-        "Pointer inertia: vx={:.1} vy={:.1} speed={:.1}",
-        vx,
-        vy,
-        speed
+        "Pointer inertia: release_speed={:.1} start_speed={:.1} multiplier={:.3}",
+        speed,
+        start_speed,
+        args.pointer_start_speed_multiplier
     );
-    let _ = tx.send(MomentumMessage::StartPointer { vx, vy });
+    let _ = tx.send(MomentumMessage::StartPointer {
+        vx: start_vx,
+        vy: start_vy,
+    });
     true
 }
 
@@ -822,4 +871,26 @@ fn arm_retouch_confirm_timer(
             stop_touch_us, stop_touch_us
         ));
     });
+}
+
+fn retouch_is_stopped(current_token: u64, stopped_token: &AtomicU64) -> bool {
+    current_token != 0 && stopped_token.load(Ordering::SeqCst) == current_token
+}
+
+fn mark_retouch_motion_forwarded(
+    already_forwarded: &mut bool,
+    decision_log: &DecisionLog,
+    raw_dx: i32,
+    raw_dy: i32,
+) {
+    if *already_forwarded {
+        return;
+    }
+
+    *already_forwarded = true;
+    decision_log.line(format!(
+        "RETOUCH_CONTINUE reason=motion_after_stop raw_dx={} raw_dy={}",
+        raw_dx, raw_dy
+    ));
+    log::debug!("Forwarding continued retouch motion after inertia stop");
 }

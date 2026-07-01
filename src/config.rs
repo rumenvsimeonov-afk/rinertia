@@ -21,6 +21,7 @@ pub struct PointerConfig {
     pub drag: Option<f64>,
     pub speed_factor: Option<f64>,
     pub min_velocity: Option<f64>,
+    pub start_speed_multiplier: Option<f64>,
     pub velocity_stale_ms: Option<u64>,
     pub max_duration_ms: Option<u64>,
     pub stop_touch_ms: Option<u64>,
@@ -30,8 +31,9 @@ pub const DEFAULT_VELOCITY_STALE_MS: u64 = 150;
 pub const DEFAULT_POINTER_DRAG: f64 = 0.01;
 pub const DEFAULT_POINTER_SPEED_FACTOR: f64 = 0.0075;
 pub const DEFAULT_POINTER_MIN_VELOCITY: f64 = 100.0;
+pub const DEFAULT_POINTER_START_SPEED_MULTIPLIER: f64 = 1.3;
 pub const DEFAULT_POINTER_MAX_DURATION_MS: u64 = 0;
-pub const DEFAULT_STOP_TOUCH_MS: u64 = 70;
+pub const DEFAULT_STOP_TOUCH_MS: u64 = 56;
 pub const DEFAULT_LOG_LEVEL: &str = "info";
 
 pub fn load(path: &Path) -> Result<Config> {
@@ -72,6 +74,11 @@ pub fn resolve(cli: &crate::Args, cfg: &Config) -> crate::ResolvedArgs {
                 .and_then(|p| p.min_velocity)
                 .unwrap_or(DEFAULT_POINTER_MIN_VELOCITY)
         }),
+        pointer_start_speed_multiplier: cli
+            .pointer_start_speed_multiplier
+            .or_else(|| pointer.and_then(|p| p.start_speed_multiplier))
+            .unwrap_or(DEFAULT_POINTER_START_SPEED_MULTIPLIER)
+            .clamp(0.1, 5.0),
         pointer_max_duration_ms: cli.pointer_max_duration_ms.unwrap_or_else(|| {
             pointer
                 .and_then(|p| p.max_duration_ms)

@@ -50,6 +50,10 @@ pub struct Args {
     #[arg(long)]
     pub pointer_min_velocity: Option<f64>,
 
+    /// Multiplier applied to release velocity when pointer inertia starts
+    #[arg(long)]
+    pub pointer_start_speed_multiplier: Option<f64>,
+
     /// Maximum pointer inertia duration in milliseconds (0 disables the limit)
     #[arg(long)]
     pub pointer_max_duration_ms: Option<u64>,
@@ -79,6 +83,7 @@ pub struct ResolvedArgs {
     pub pointer_drag: f64,
     pub pointer_speed_factor: f64,
     pub pointer_min_velocity: f64,
+    pub pointer_start_speed_multiplier: f64,
     pub pointer_max_duration_ms: u64,
     pub stop_touch_ms: u64,
     pub dry: bool,
@@ -89,6 +94,7 @@ pub struct ResolvedArgs {
 #[derive(Debug, Clone)]
 pub enum MomentumMessage {
     StartPointer { vx: f64, vy: f64 },
+    ContinuePointer { dx: i32, dy: i32 },
     Stop,
 }
 

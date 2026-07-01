@@ -25,6 +25,7 @@ pub fn run_engine(
 ) {
     let pointer_tau_ms = drag_to_tau_ms(args.pointer_drag);
     let pointer_speed_factor = args.pointer_speed_factor;
+    let continued_pointer_scale = pointer_speed_factor / NOMINAL_FRAME_SEC;
 
     let mut state = EngineState::Idle;
     let mut vx: f64 = 0.0;
@@ -71,7 +72,20 @@ pub fn run_engine(
                         ));
                         log::debug!("PointerMomentum start: vx={:.1} vy={:.1}", vx, vy);
                     }
-                    MomentumMessage::Stop => {}
+                    MomentumMessage::ContinuePointer { dx, dy } => {
+                        emit_continued_pointer(
+                            &mut vdev,
+                            &mut x_accum,
+                            &mut y_accum,
+                            dx,
+                            dy,
+                            continued_pointer_scale,
+                        );
+                    }
+                    MomentumMessage::Stop => {
+                        x_accum = 0.0;
+                        y_accum = 0.0;
+                    }
                 }
             }
 
@@ -113,6 +127,27 @@ pub fn run_engine(
                             (vx * vx + vy * vy).sqrt()
                         ));
                         send_status(&status_tx, EngineStatus::PointerActive);
+                        continue;
+                    }
+                    Ok(MomentumMessage::ContinuePointer { dx, dy }) => {
+                        vx = 0.0;
+                        vy = 0.0;
+                        x_accum = 0.0;
+                        y_accum = 0.0;
+                        decision_log.line(format!(
+                            "ENGINE_STOP reason=continued_touch emit_count={} total_dx={} total_dy={}",
+                            emit_count, total_dx, total_dy
+                        ));
+                        state = EngineState::Idle;
+                        send_status(&status_tx, EngineStatus::PointerIdle);
+                        emit_continued_pointer(
+                            &mut vdev,
+                            &mut x_accum,
+                            &mut y_accum,
+                            dx,
+                            dy,
+                            continued_pointer_scale,
+                        );
                         continue;
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -257,5 +292,65 @@ fn emit_pointer(vdev: &mut Option<VirtualDevice>, dx: i32, dy: i32) {
         None => {
             log::info!("[dry] pointer dx={} dy={}", dx, dy);
         }
+    }
+}
+
+fn emit_continued_pointer(
+    vdev: &mut Option<VirtualDevice>,
+    x_accum: &mut f64,
+    y_accum: &mut f64,
+    raw_dx: i32,
+    raw_dy: i32,
+    scale: f64,
+) {
+    let (dx, dy) = take_continued_motion(x_accum, y_accum, raw_dx, raw_dy, scale);
+    if dx == 0 && dy == 0 {
+        return;
+    }
+
+    log::trace!(
+        "Continued touch pointer: raw_dx={} raw_dy={} dx={} dy={}",
+        raw_dx,
+        raw_dy,
+        dx,
+        dy
+    );
+    emit_pointer(vdev, dx, dy);
+}
+
+fn take_continued_motion(
+    x_accum: &mut f64,
+    y_accum: &mut f64,
+    raw_dx: i32,
+    raw_dy: i32,
+    scale: f64,
+) -> (i32, i32) {
+    *x_accum += raw_dx as f64 * scale;
+    *y_accum += raw_dy as f64 * scale;
+
+    let dx = take_integer_motion(x_accum);
+    let dy = take_integer_motion(y_accum);
+    (dx, dy)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::take_continued_motion;
+
+    #[test]
+    fn continued_motion_preserves_fractional_distance() {
+        let mut x_accum = 0.0;
+        let mut y_accum = 0.0;
+
+        assert_eq!(
+            take_continued_motion(&mut x_accum, &mut y_accum, 1, -1, 0.5),
+            (0, 0)
+        );
+        assert_eq!(
+            take_continued_motion(&mut x_accum, &mut y_accum, 1, -1, 0.5),
+            (1, -1)
+        );
+        assert_eq!(x_accum, 0.0);
+        assert_eq!(y_accum, 0.0);
     }
 }

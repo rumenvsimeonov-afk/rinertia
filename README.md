@@ -16,6 +16,8 @@ touchpad, so expect to adjust the parameters for other hardware.
 - Creates a uinput virtual relative pointer device.
 - Starts cursor inertia after a qualifying one-finger movement.
 - Stops inertia on a real click, multitouch gesture, or confirmed retouch.
+- Continues cursor movement when the stop-touch remains down and moves after
+  inertia has stopped.
 - Ignores very short post-lift retouches to avoid false stops caused by finger
   bounce or skin elasticity.
 - Temporarily grabs the real touchpad only while pointer inertia is active, so
@@ -140,6 +142,7 @@ Important parameters:
 | `pointer.drag` | Higher value means faster decay and shorter inertia. |
 | `pointer.speed_factor` | Converts touchpad units to virtual mouse movement. |
 | `pointer.min_velocity` | Minimum release velocity required to start inertia. |
+| `pointer.start_speed_multiplier` | Multiplies velocity when inertia starts. |
 | `pointer.velocity_stale_ms` | Maximum age of release samples used for velocity. |
 | `pointer.max_duration_ms` | Optional safety timeout; `0` disables it. |
 | `pointer.stop_touch_ms` | Required touch duration to stop active inertia. |
