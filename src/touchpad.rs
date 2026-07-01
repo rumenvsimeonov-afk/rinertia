@@ -376,6 +376,16 @@ pub fn run_listener(
             }
         }
 
+        if release_stale_grab(
+            &mut device,
+            &mut touchpad_grabbed,
+            state,
+            momentum_active,
+            &decision_log,
+        ) {
+            awaiting_momentum_stop_touch = false;
+        }
+
         let events = match device.fetch_events() {
             Ok(events) => events,
             Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -612,6 +622,9 @@ pub fn run_listener(
                     | Key::BTN_TOOL_QUINTTAP => {
                         if event.value() == 1 {
                             click_seen = true;
+                            retouch_active_token.fetch_add(1, Ordering::SeqCst);
+                            current_retouch_token = 0;
+                            retouch_motion_forwarded = false;
                             state = ListenerState::Idle;
                             let _ = tx.send(MomentumMessage::Stop);
                             log::debug!("Multitouch gesture -> Stop");
@@ -636,6 +649,16 @@ pub fn run_listener(
                     ungrab_touchpad(&mut device, &mut touchpad_grabbed, &decision_log, reason);
                 }
             }
+        }
+
+        if release_stale_grab(
+            &mut device,
+            &mut touchpad_grabbed,
+            state,
+            momentum_active,
+            &decision_log,
+        ) {
+            awaiting_momentum_stop_touch = false;
         }
     }
 
@@ -893,4 +916,19 @@ fn mark_retouch_motion_forwarded(
         raw_dx, raw_dy
     ));
     log::debug!("Forwarding continued retouch motion after inertia stop");
+}
+
+fn release_stale_grab(
+    device: &mut evdev::Device,
+    grabbed: &mut bool,
+    state: ListenerState,
+    momentum_active: bool,
+    decision_log: &DecisionLog,
+) -> bool {
+    if !*grabbed || momentum_active || state == ListenerState::MomentumRetouch {
+        return false;
+    }
+
+    ungrab_touchpad(device, grabbed, decision_log, "inactive_listener_state");
+    true
 }

@@ -85,6 +85,7 @@ pub fn run_engine(
                     MomentumMessage::Stop => {
                         x_accum = 0.0;
                         y_accum = 0.0;
+                        send_status(&status_tx, EngineStatus::PointerIdle);
                     }
                 }
             }
